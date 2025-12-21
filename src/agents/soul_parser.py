@@ -30,6 +30,14 @@ class AgentEconomics(BaseModel):
     royalty_share: float
     penalty_multiplier: float
 
+    @field_validator("complexity_access")
+    @classmethod
+    def validate_complexity_access(cls, v: int) -> int:
+        """Validate complexity access level."""
+        if not 1 <= v <= 5:
+            raise ValueError("Complexity access must be between 1 and 5")
+        return v
+
 
 class AgentCognition(BaseModel):
     """Agent cognitive configuration."""
@@ -75,14 +83,6 @@ class AgentGenotype(BaseModel):
         valid_tiers = ["novice", "established", "advanced", "expert", "master"]
         if v not in valid_tiers:
             raise ValueError(f"Tier must be one of {valid_tiers}")
-        return v
-
-    @field_validator("complexity_access")
-    @classmethod
-    def validate_complexity_access(cls, v: int) -> int:
-        """Validate complexity access level."""
-        if not 1 <= v <= 5:
-            raise ValueError("Complexity access must be between 1 and 5")
         return v
 
 

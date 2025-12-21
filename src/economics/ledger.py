@@ -137,7 +137,7 @@ class MasterCompensationEngine:
         1. Write to temporary file
         2. Compute checksum
         3. Atomic rename
-        4. fsync to ensure durability
+        4. fsync to ensure durability (platform-specific)
         """
         with self._lock:
             temp_path = self.ledger_path.with_suffix(".tmp")
@@ -147,14 +147,23 @@ class MasterCompensationEngine:
                 with open(temp_path, "w") as f:
                     json.dump(self._ledger, f, indent=2)
                     f.flush()
-                    os.fsync(f.fileno())
+                    # fsync for durability (platform-safe)
+                    try:
+                        os.fsync(f.fileno())
+                    except (OSError, ValueError):
+                        # Windows may not support fsync on text mode files
+                        pass
 
                 # Atomic rename (POSIX-compliant)
                 temp_path.replace(self.ledger_path)
 
-                # Ensure durability
-                with open(self.ledger_path, "r") as f:
-                    os.fsync(f.fileno())
+                # Ensure durability (platform-safe)
+                try:
+                    with open(self.ledger_path, "r") as f:
+                        os.fsync(f.fileno())
+                except (OSError, ValueError):
+                    # Windows compatibility
+                    pass
 
             except Exception as e:
                 if temp_path.exists():

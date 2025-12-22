@@ -1,0 +1,137 @@
+{
+  "version": "2.4.0",
+  "policy": "strict-isolation",
+  "description": "Hypervisor hook configuration manifest. Defines all PRE_PROMPT, PRE_TOOL, and POST_TOOL hooks.",
+  "hooks": [
+    {
+      "id": "fiscal_injector",
+      "type": "PRE_PROMPT",
+      "priority": 5,
+      "module": "src.hooks.economics.FiscalStatusHook",
+      "description": "Inject fiscal reality into agent prompt (balance, streak, debt status)",
+      "enabled": true,
+      "config": {
+        "warn_at": 10.0,
+        "halt_at": -100.0
+      }
+    },
+    {
+      "id": "memory_context_injector",
+      "type": "PRE_PROMPT",
+      "priority": 10,
+      "module": "src.hooks.memory.MemoryContextHook",
+      "description": "Inject semantic memory context via vector search",
+      "enabled": true,
+      "config": {
+        "top_k": 5,
+        "min_similarity": 0.82
+      }
+    },
+    {
+      "id": "python_ast_guard",
+      "type": "PRE_TOOL",
+      "priority": 25,
+      "target_tool": "execute_python",
+      "module": "src.hooks.security.ASTScannerHook",
+      "description": "Static analysis of Python code for sandbox escapes",
+      "enabled": true,
+      "config": {
+        "blocked_imports": [
+          "os",
+          "subprocess",
+          "socket",
+          "requests",
+          "urllib",
+          "ctypes"
+        ],
+        "blocked_calls": [
+          "eval",
+          "exec",
+          "getattr",
+          "setattr",
+          "__import__",
+          "compile"
+        ],
+        "blocked_dunder_methods": [
+          "__subclasses__",
+          "__globals__",
+          "__builtins__"
+        ]
+      }
+    },
+    {
+      "id": "bash_regex_guard",
+      "type": "PRE_TOOL",
+      "priority": 30,
+      "target_tool": "execute_bash",
+      "module": "src.hooks.security.BashGuardHook",
+      "description": "Regex-based filtering of dangerous shell commands",
+      "enabled": true,
+      "config": {
+        "blocked_patterns": [
+          "\\.\\.",
+          "/etc/",
+          "/root/",
+          "/dev/",
+          "chmod",
+          "chown",
+          "sudo"
+        ],
+        "network_blocked_by_default": true,
+        "require_network_grant": true
+      }
+    },
+    {
+      "id": "resource_metering",
+      "type": "PRE_TOOL",
+      "priority": 40,
+      "module": "src.hooks.orchestration.ResourceMeteringHook",
+      "description": "Verify resource quota before tool execution",
+      "enabled": true,
+      "config": {
+        "cpu_quota_percent": 25,
+        "memory_limit_mb": 512,
+        "max_pids": 32
+      }
+    },
+    {
+      "id": "self_healing_retry",
+      "type": "POST_TOOL",
+      "priority": 60,
+      "module": "src.hooks.recovery.SelfHealingHook",
+      "description": "Attempt to fix non-security errors via cognitive retry",
+      "enabled": true,
+      "config": {
+        "retry_budget_apx": 5.0,
+        "max_retries": 1,
+        "timeout_seconds": 30
+      }
+    },
+    {
+      "id": "output_sanitization",
+      "type": "POST_TOOL",
+      "priority": 70,
+      "module": "src.hooks.recovery.OutputSanitizationHook",
+      "description": "Prune and summarize tool output to prevent context flooding",
+      "enabled": true,
+      "config": {
+        "max_output_lines": 100,
+        "first_lines_retain": 50,
+        "last_lines_retain": 50
+      }
+    },
+    {
+      "id": "audit_logging",
+      "type": "POST_TOOL",
+      "priority": 90,
+      "module": "src.hooks.telemetry.AuditLoggingHook",
+      "description": "Log all actions to immutable audit trail",
+      "enabled": true,
+      "config": {
+        "log_file": "data/audit_log.jsonl",
+        "include_stack_trace": true,
+        "compress_after_days": 7
+      }
+    }
+  ]
+}

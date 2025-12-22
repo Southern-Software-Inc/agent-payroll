@@ -9,6 +9,7 @@ The MCE is the economic heart of the Apex ecosystem. It manages:
 - Performance tracking (streak, success rate, reputation)
 - Token taxation and bond management
 - Transaction logging with checksums
+- Integration with Citadel (Z3 formal verifier) for invariant checking
 
 VERSION CONTROL FOOTER
 File: src/economics/ledger.py
@@ -230,6 +231,8 @@ class MasterCompensationEngine:
     ) -> Optional[str]:
         """
         Execute a financial transfer between agents.
+        
+        Before executing, the Citadel verifies all financial invariants.
 
         Args:
             from_agent: Source agent ID.
@@ -242,12 +245,22 @@ class MasterCompensationEngine:
         Returns:
             Transaction ID if successful, None if failed.
         """
+        # Lazy import to avoid circular dependency
+        try:
+            from src.citadel import get_citadel
+        except ImportError:
+            # Citadel not available, proceed without formal verification
+            get_citadel = None
+        
         with self._lock:
             if from_agent not in self._ledger["agents"] or to_agent not in self._ledger["agents"]:
                 return None
 
+            from_balance_pre = self._ledger["agents"][from_agent]["financials"]["balance"]
+            to_balance_pre = self._ledger["agents"][to_agent]["financials"]["balance"]
+            
             # Check sufficient balance
-            if self._ledger["agents"][from_agent]["financials"]["balance"] < amount:
+            if from_balance_pre < amount:
                 return None
 
             tx_id = str(uuid.uuid4())
@@ -267,10 +280,29 @@ class MasterCompensationEngine:
 
             # Compute checksum
             tx["checksum"] = self._compute_transaction_checksum(tx)
+            
+            # CITADEL VERIFICATION: Before updating ledger, verify invariants
+            if get_citadel:
+                citadel = get_citadel()
+                
+                # Verify solvency
+                solvency_check = citadel.verify_solvency(from_balance_pre, amount)
+                if not solvency_check.is_valid:
+                    print(f"Citadel: Solvency check failed: {solvency_check.error_details}")
+                    return None
+                
+                # Verify checksum
+                checksum_check = citadel.verify_checksum_integrity(tx)
+                if not checksum_check.is_valid:
+                    print(f"Citadel: Checksum failed: {checksum_check.error_details}")
+                    return None
 
             # Update balances
-            self._ledger["agents"][from_agent]["financials"]["balance"] -= amount
-            self._ledger["agents"][to_agent]["financials"]["balance"] += amount
+            from_balance_post = from_balance_pre - amount
+            to_balance_post = to_balance_pre + amount
+            
+            self._ledger["agents"][from_agent]["financials"]["balance"] = from_balance_post
+            self._ledger["agents"][to_agent]["financials"]["balance"] = to_balance_post
 
             # Log transaction
             self._ledger["transaction_log"].append(tx)

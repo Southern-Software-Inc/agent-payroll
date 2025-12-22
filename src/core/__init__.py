@@ -28,6 +28,14 @@ from src.core.constants import (
     get_config,
 )
 
+from src.core.dream_cycle import (
+    DreamCycle,
+    DreamCycleScheduler,
+    DreamSessionResult,
+    get_dream_cycle,
+    get_dream_scheduler,
+)
+
 __all__ = [
     "SYSTEM_CONFIG",
     "PROJECT_ROOT",
@@ -42,4 +50,9 @@ __all__ = [
     "LEDGER_FILE",
     "ensure_directories_exist",
     "get_config",
+    "DreamCycle",
+    "DreamCycleScheduler",
+    "DreamSessionResult",
+    "get_dream_cycle",
+    "get_dream_scheduler",
 ]

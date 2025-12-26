@@ -1,7 +1,7 @@
 """
 The Citadel - Z3 Formal Verifier for Financial Transactions
 Module ID: APEX-CITADEL-007
-Version: 0.1.0
+Version: 0.2.0
 
 Verifies conservation of wealth and invariant maintenance before ledger writes.
 Uses Z3 SMT solver to prove transaction safety.
@@ -14,14 +14,19 @@ Transaction safety checks:
 
 VERSION CONTROL FOOTER
 File: src/citadel/__init__.py
-Version: 0.1.0
-Last Modified: 2025-12-21T00:00:00Z
-Git Hash: INITIAL
+Version: 0.2.0
+Last Modified: 2025-12-22T00:00:00Z
+Git Hash: UPDATED
 """
 
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from dataclasses import dataclass
 import hashlib
+import logging
+
+from .verifier import Z3Verifier, get_z3_verifier
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,13 +42,15 @@ class Citadel:
     """
     Z3-based formal verifier for financial invariants.
     
-    In production, this integrates with Z3 SMT solver for rigorous verification.
-    This stub implementation provides the interface.
+    Integrates with Z3 SMT solver for rigorous verification.
+    Falls back to arithmetic verification if Z3 is not available.
     """
 
     def __init__(self):
         """Initialize Citadel verifier."""
         self.verification_log: list = []
+        self.z3_verifier = get_z3_verifier()
+        logger.info(f"Citadel initialized with Z3 available: {self.z3_verifier.solver is not None}")
 
     def verify_conservation_of_wealth(
         self,
@@ -75,22 +82,15 @@ class Citadel:
         Returns:
             VerificationResult indicating if conservation holds
         """
-        wealth_pre = bank_pre + agent_pre
-        wealth_post = bank_post + agent_post
-        
-        is_valid = abs(wealth_pre - wealth_post) < 1e-6  # Float tolerance
-        
-        result = VerificationResult(
-            is_valid=is_valid,
-            theorem="Conservation of Wealth",
-            reasoning=f"Total wealth before: {wealth_pre} APX, after: {wealth_post} APX",
+        result = self.z3_verifier.verify_theorem(
+            "conservation",
+            bank_pre=bank_pre,
+            agent_pre=agent_pre,
+            reward=reward,
+            tax=tax,
+            bank_post=bank_post,
+            agent_post=agent_post
         )
-        
-        if not is_valid:
-            result.error_details = (
-                f"Wealth mismatch detected! "
-                f"Lost/gained {wealth_post - wealth_pre} APX"
-            )
         
         self.verification_log.append(result)
         return result
@@ -108,19 +108,11 @@ class Citadel:
         Returns:
             VerificationResult indicating solvency
         """
-        is_valid = balance >= transaction_amount
-        
-        result = VerificationResult(
-            is_valid=is_valid,
-            theorem="Solvency Constraint",
-            reasoning=f"Balance {balance} APX >= Transaction {transaction_amount} APX",
+        result = self.z3_verifier.verify_theorem(
+            "solvency",
+            balance=balance,
+            transaction_amount=transaction_amount
         )
-        
-        if not is_valid:
-            result.error_details = (
-                f"Insufficient funds: {balance} APX "
-                f"required {transaction_amount} APX"
-            )
         
         self.verification_log.append(result)
         return result
@@ -138,19 +130,11 @@ class Citadel:
         Returns:
             VerificationResult indicating debt compliance
         """
-        is_valid = balance >= debt_ceiling
-        
-        result = VerificationResult(
-            is_valid=is_valid,
-            theorem="Debt Ceiling Constraint",
-            reasoning=f"Balance {balance} APX >= Ceiling {debt_ceiling} APX",
+        result = self.z3_verifier.verify_theorem(
+            "debt_ceiling",
+            balance=balance,
+            debt_ceiling=debt_ceiling
         )
-        
-        if not is_valid:
-            result.error_details = (
-                f"Debt ceiling exceeded: {balance} APX "
-                f"below ceiling {debt_ceiling} APX (bankrupt)"
-            )
         
         self.verification_log.append(result)
         return result
@@ -219,13 +203,56 @@ class Citadel:
                 )
                 checks.append(solvency)
         
-        # Check 3: Conservation (implicit in proper transaction structure)
+        # Check 3: Debt ceiling (if applicable)
+        if "from" in transaction and transaction["from"] != "system_bank":
+            agent_state = ledger_state.get("agents", {}).get(transaction["from"])
+            if agent_state and "debt_ceiling" in agent_state["financials"]:
+                debt_ceiling_check = self.verify_debt_ceiling(
+                    agent_state["financials"]["balance"],
+                    agent_state["financials"]["debt_ceiling"]
+                )
+                checks.append(debt_ceiling_check)
+        
+        # Check 4: Non-negative balance for system bank
+        if "to" in transaction and transaction["to"] == "system_bank":
+            system_balance = ledger_state.get("system_bank", {}).get("balance", 0)
+            new_balance = system_balance + transaction.get("amount", 0)
+            non_negative = self.z3_verifier.verify_theorem(
+                "non_negative",
+                balance=new_balance
+            )
+            checks.append(non_negative)
+        
+        # Check 5: Conservation (implicit in proper transaction structure)
         # This would be verified in actual ledger.transfer_funds()
         
         all_valid = all(c.is_valid for c in checks)
         reason = "; ".join([c.reasoning for c in checks])
         
         return all_valid, reason
+    
+    def get_verification_summary(self) -> Dict[str, Any]:
+        """
+        Get summary of all verifications performed.
+        
+        Returns:
+            Dictionary with verification statistics
+        """
+        return self.z3_verifier.get_verification_summary()
+    
+    def clear_verification_log(self) -> None:
+        """Clear verification log."""
+        self.verification_log.clear()
+        self.z3_verifier.clear_log()
+    
+    def export_verification_log(self, filepath: str) -> None:
+        """
+        Export verification log to file.
+        
+        Args:
+            filepath: Path to export file
+        """
+        self.z3_verifier.export_log(filepath)
 
 
 # Global Citadel instance
@@ -244,4 +271,6 @@ __all__ = [
     "Citadel",
     "VerificationResult",
     "get_citadel",
+    "Z3Verifier",
+    "get_z3_verifier",
 ]

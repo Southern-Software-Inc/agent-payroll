@@ -25,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.core import ensure_directories_exist, SYSTEM_CONFIG
 from src.economics import get_mce
 from src.agents import get_soul_parser
-from src.mcp import get_mcp_server
+from src.mcp import mcp_server
 
 
 # ============================================================================
@@ -66,7 +66,8 @@ def initialize_system() -> None:
     logger.info(f"✓ Soul Parser ready ({len(available_agents)} agents found)")
 
     # Initialize MCP Server
-    mcp_server = get_mcp_server()
+    # Use the global MCP server instance
+    pass
     logger.info("✓ MCP Server ready")
 
     logger.info("APEX System initialized successfully!")

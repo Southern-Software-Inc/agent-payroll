@@ -131,10 +131,37 @@ class HookManager:
         return payload
 
     async def _execute_hook(self, hook: Hook, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a single hook (stub implementation)."""
-        # This is a placeholder. In production, hooks would be dynamically loaded
-        # from their module paths and executed.
-        return payload
+        """Execute a single hook by dynamically loading and executing it."""
+        try:
+            # Import the hook module
+            module_path = hook.module_path
+            module_name = module_path.split('.')[-1]
+            
+            # Import the module
+            import importlib
+            module = importlib.import_module(module_path)
+            
+            # Get the hook class
+            hook_class_name = module_name.replace('_', '')
+            hook_class = getattr(module, hook_class_name)
+            
+            # Create hook instance
+            hook_instance = hook_class(hook.config)
+            
+            # Execute the hook
+            result = await hook_instance.execute(payload)
+            
+            return result
+            
+        except ImportError as e:
+            print(f"Warning: Could not import hook module {hook.module_path}: {e}")
+            return payload
+        except AttributeError as e:
+            print(f"Warning: Could not find hook class in {hook.module_path}: {e}")
+            return payload
+        except Exception as e:
+            print(f"Error executing hook {hook.id}: {e}")
+            raise
 
 
 # Global hook manager instance

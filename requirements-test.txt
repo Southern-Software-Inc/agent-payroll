@@ -1,0 +1,65 @@
+# Test dependencies for APEX Agent Payroll System
+# Module ID: APEX-REQ-TEST-001
+# Version: 0.1.0
+
+# Core testing framework
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+pytest-cov>=5.0.0
+pytest-mock>=3.14.0
+pytest-xdist>=3.5.0          # Parallel testing
+pytest-benchmark>=4.0.0      # Performance testing
+pytest-profiling>=1.7.0      # Profiling
+
+# Test data generation
+factory-boy>=3.3.0           # Test data generation
+faker>=20.1.0                 # Fake data generation
+
+# Time mocking
+freezegun>=1.4.0              # Time mocking
+
+# HTTP mocking
+responses>=0.24.1             # HTTP mocking
+aioresponses>=0.7.6           # Async HTTP mocking
+
+# Docker test containers
+testcontainers>=3.7.1         # Docker test containers
+
+# Load testing
+locust>=2.17.0                # Load testing
+
+# Security linting
+bandit>=1.7.5                 # Security linting
+
+# Type checking
+mypy>=1.13.0                  # Type checking
+
+# Coverage reporting
+coverage>=7.3.0               # Coverage measurement
+
+# Test reporting
+pytest-html>=4.1.0            # HTML test reports
+pytest-json-report>=1.5.0     # JSON test reports
+
+# Integration testing helpers
+httpx>=0.25.0                 # Async HTTP client for testing
+websockets>=12.0              # WebSocket testing
+
+# Database testing
+pytest-postgresql>=5.0.0      # PostgreSQL testing
+pytest-redis>=3.0.0           # Redis testing
+
+# Mock services
+mock>=5.1.0                   # Mock library
+asynctest>=0.21.0             # Async testing utilities
+
+# Performance profiling
+py-spy>=0.3.14                # Python profiler
+memory-profiler>=0.61.0       # Memory profiler
+
+# Property-based testing
+hypothesis>=6.92.0            # Property-based testing
+
+# Test utilities
+testfixtures>=7.2.0           # Test fixtures
+dirty-equals>=0.7.0           # Comparison utilities

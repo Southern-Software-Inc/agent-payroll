@@ -1,235 +1,531 @@
 """
-MCP Server - Model Context Protocol Hub
-Module ID: APEX-ARCH-001
+MCP Server Implementation
+Module ID: APEX-MCP-SERVER-001
 Version: 0.1.0
 
-The nervous system of the Apex ecosystem. Manages JSON-RPC 2.0 communication,
-asynchronous I/O, and orchestration of agents and tools.
-
-VERSION CONTROL FOOTER
-File: src/mcp/server.py
-Version: 0.1.0
-Last Modified: 2025-12-21T00:00:00Z
-Git Hash: INITIAL
+Implements the Model Context Protocol (MCP) server with tool execution
+capabilities for the APEX Agent Payroll System.
 """
 
 import asyncio
 import json
+import logging
+from typing import Dict, List, Optional, Any, Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
 import uuid
-from typing import Dict, Any, Optional, Callable
-from datetime import datetime, timezone, timedelta
-from src.core.constants import (
-    JSONRPC_VERSION,
-    REQUEST_TIMEOUT_SECONDS,
-    GARBAGE_COLLECTION_INTERVAL,
-    ERROR_CODES,
-    LEDGER_FILE,
-)
-from src.economics import get_mce
+
+logger = logging.getLogger(__name__)
 
 
-class JSONRPCError(Exception):
-    """Base class for JSON-RPC errors."""
-
-    def __init__(self, code: int, message: str, data: Optional[Dict[str, Any]] = None):
-        """Initialize JSON-RPC error."""
-        self.code = code
-        self.message = message
-        self.data = data
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to JSON-RPC error object."""
-        error_dict = {"code": self.code, "message": self.message}
-        if self.data:
-            error_dict["data"] = self.data
-        return error_dict
+class ToolStatus(Enum):
+    """Tool execution status."""
+    IDLE = "idle"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
-class ActiveRequestRegistry:
-    """
-    Tracks active JSON-RPC requests with TTL and timeout handling.
+@dataclass
+class Tool:
+    """Represents an MCP tool."""
+    name: str
+    description: str
+    input_schema: Dict[str, Any]
+    handler: Callable
+    category: str = "general"
+    timeout: float = 30.0
+    async_handler: bool = False
 
-    Stores request metadata and automatically garbage-collects expired requests.
-    """
 
-    def __init__(self, ttl_seconds: int = REQUEST_TIMEOUT_SECONDS):
-        """Initialize registry."""
-        self.ttl_seconds = ttl_seconds
-        self._registry: Dict[str, Dict[str, Any]] = {}
-        self._lock = asyncio.Lock()
+@dataclass
+class ToolExecution:
+    """Represents a tool execution."""
+    id: str
+    tool_name: str
+    arguments: Dict[str, Any]
+    status: ToolStatus = ToolStatus.IDLE
+    result: Optional[Any] = None
+    error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    duration: Optional[float] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-    async def register_request(
-        self, request_id: str, method: str, params: Dict[str, Any]
-    ) -> None:
-        """Register a new request."""
-        async with self._lock:
-            self._registry[request_id] = {
-                "method": method,
-                "params": params,
-                "registered_at": datetime.now(timezone.utc),
-            }
 
-    async def get_request(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """Get request metadata."""
-        async with self._lock:
-            return self._registry.get(request_id)
-
-    async def complete_request(self, request_id: str) -> None:
-        """Mark request as completed."""
-        async with self._lock:
-            if request_id in self._registry:
-                del self._registry[request_id]
-
-    async def garbage_collect(self) -> list[str]:
+class ToolRegistry:
+    """Registry for MCP tools."""
+    
+    def __init__(self):
+        """Initialize the tool registry."""
+        self._tools: Dict[str, Tool] = {}
+        self._categories: Dict[str, List[str]] = {}
+        
+        logger.info("ToolRegistry initialized")
+    
+    def register_tool(self, tool: Tool) -> None:
         """
-        Remove expired requests and return list of expired IDs.
-
+        Register a tool.
+        
+        Args:
+            tool: Tool to register
+        """
+        self._tools[tool.name] = tool
+        
+        # Add to category
+        if tool.category not in self._categories:
+            self._categories[tool.category] = []
+        if tool.name not in self._categories[tool.category]:
+            self._categories[tool.category].append(tool.name)
+        
+        logger.info(f"Registered tool: {tool.name} in category {tool.category}")
+    
+    def unregister_tool(self, name: str) -> bool:
+        """
+        Unregister a tool.
+        
+        Args:
+            name: Tool name
+            
         Returns:
-            List of request IDs that expired.
+            True if unregistered successfully
         """
-        expired = []
-        now = datetime.now(timezone.utc)
-
-        async with self._lock:
-            for request_id, metadata in list(self._registry.items()):
-                age = now - metadata["registered_at"]
-                if age.total_seconds() > self.ttl_seconds:
-                    expired.append(request_id)
-                    del self._registry[request_id]
-
-        return expired
+        if name not in self._tools:
+            return False
+        
+        tool = self._tools[name]
+        
+        # Remove from category
+        if tool.category in self._categories and name in self._categories[tool.category]:
+            self._categories[tool.category].remove(name)
+        
+        # Remove tool
+        del self._tools[name]
+        
+        logger.info(f"Unregistered tool: {name}")
+        return True
+    
+    def get_tool(self, name: str) -> Optional[Tool]:
+        """Get a tool by name."""
+        return self._tools.get(name)
+    
+    def list_tools(self, category: str = None) -> List[Tool]:
+        """
+        List tools, optionally filtered by category.
+        
+        Args:
+            category: Category filter
+            
+        Returns:
+            List of tools
+        """
+        if category:
+            tool_names = self._categories.get(category, [])
+            return [self._tools[name] for name in tool_names if name in self._tools]
+        return list(self._tools.values())
+    
+    def get_categories(self) -> List[str]:
+        """Get all tool categories."""
+        return list(self._categories.keys())
 
 
 class MCPServer:
     """
-    Model Context Protocol (MCP) Server.
-
-    Core hub for JSON-RPC 2.0 communication with LLM clients.
-    Implements asynchronous I/O, request routing, and error handling.
+    MCP Server with tool execution capabilities.
+    
+    Provides a complete MCP implementation with tool registry,
+    execution management, and protocol handling.
     """
-
-    def __init__(self):
-        """Initialize MCP Server."""
-        self.request_registry = ActiveRequestRegistry()
-        self._handlers: Dict[str, Callable] = {}
-        self._resources: Dict[str, Callable] = {}
-        self._tools: Dict[str, Callable] = {}
-        self._mce = get_mce()
-
-    def register_handler(self, method: str, handler: Callable) -> None:
+    
+    def __init__(self, name: str = "apex-mcp-server", version: str = "0.1.0"):
         """
-        Register a JSON-RPC method handler.
-
+        Initialize the MCP server.
+        
         Args:
-            method: JSON-RPC method name.
-            handler: Async callable that handles the method.
+            name: Server name
+            version: Server version
         """
-        self._handlers[method] = handler
-
-    def register_resource(self, uri_scheme: str, handler: Callable) -> None:
-        """
-        Register a resource handler.
-
-        Args:
-            uri_scheme: URI scheme (e.g., "payroll://").
-            handler: Async callable that retrieves the resource.
-        """
-        self._resources[uri_scheme] = handler
-
-    def register_tool(self, tool_name: str, tool_handler: Callable) -> None:
-        """
-        Register a tool.
-
-        Args:
-            tool_name: Tool identifier.
-            tool_handler: Async callable that executes the tool.
-        """
-        self._tools[tool_name] = tool_handler
-
-    async def handle_request(self, raw_message: str) -> str:
-        """
-        Process a JSON-RPC 2.0 request.
-
-        Args:
-            raw_message: JSON-RPC request string.
-
-        Returns:
-            JSON-RPC response string.
-        """
+        self.name = name
+        self.version = version
+        self.tool_registry = ToolRegistry()
+        self._executions: Dict[str, ToolExecution] = {}
+        self._running_tasks: Dict[str, asyncio.Task] = {}
+        
+        # Register built-in tools
+        self._register_builtin_tools()
+        
+        logger.info(f"MCP Server initialized: {name} v{version}")
+    
+    def _register_builtin_tools(self) -> None:
+        """Register built-in MCP tools."""
+        
+        # List tools tool
+        self.tool_registry.register_tool(Tool(
+            name="list_tools",
+            description="List all available tools",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Filter by category"
+                    }
+                }
+            },
+            handler=self._handle_list_tools,
+            category="system"
+        ))
+        
+        # Get tool info tool
+        self.tool_registry.register_tool(Tool(
+            name="get_tool_info",
+            description="Get information about a specific tool",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Name of the tool"
+                    }
+                },
+                "required": ["tool_name"]
+            },
+            handler=self._handle_get_tool_info,
+            category="system"
+        ))
+        
+        # Execute tool tool
+        self.tool_registry.register_tool(Tool(
+            name="execute_tool",
+            description="Execute a tool",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Name of the tool to execute"
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "Arguments for the tool"
+                    }
+                },
+                "required": ["tool_name"]
+            },
+            handler=self._handle_execute_tool,
+            category="system",
+            async_handler=True
+        ))
+        
+        # Get execution status tool
+        self.tool_registry.register_tool(Tool(
+            name="get_execution_status",
+            description="Get status of a tool execution",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "execution_id": {
+                        "type": "string",
+                        "description": "Execution ID"
+                    }
+                },
+                "required": ["execution_id"]
+            },
+            handler=self._handle_get_execution_status,
+            category="system"
+        ))
+        
+        # Cancel execution tool
+        self.tool_registry.register_tool(Tool(
+            name="cancel_execution",
+            description="Cancel a running tool execution",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "execution_id": {
+                        "type": "string",
+                        "description": "Execution ID"
+                    }
+                },
+                "required": ["execution_id"]
+            },
+            handler=self._handle_cancel_execution,
+            category="system"
+        ))
+    
+    def _handle_list_tools(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle list_tools request."""
+        category = arguments.get("category")
+        tools = self.tool_registry.list_tools(category)
+        
+        return {
+            "tools": [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.input_schema,
+                    "category": tool.category
+                }
+                for tool in tools
+            ],
+            "categories": self.tool_registry.get_categories()
+        }
+    
+    def _handle_get_tool_info(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle get_tool_info request."""
+        tool_name = arguments["tool_name"]
+        tool = self.tool_registry.get_tool(tool_name)
+        
+        if not tool:
+            return {
+                "error": f"Tool not found: {tool_name}"
+            }
+        
+        return {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.input_schema,
+            "category": tool.category,
+            "timeout": tool.timeout,
+            "async_handler": tool.async_handler
+        }
+    
+    async def _handle_execute_tool(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle execute_tool request."""
+        tool_name = arguments["tool_name"]
+        tool_args = arguments.get("arguments", {})
+        
+        # Create execution
+        execution_id = str(uuid.uuid4())
+        execution = ToolExecution(
+            id=execution_id,
+            tool_name=tool_name,
+            arguments=tool_args
+        )
+        
+        self._executions[execution_id] = execution
+        
+        # Get tool
+        tool = self.tool_registry.get_tool(tool_name)
+        if not tool:
+            execution.status = ToolStatus.FAILED
+            execution.error = f"Tool not found: {tool_name}"
+            execution.completed_at = datetime.utcnow()
+            return {
+                "execution_id": execution_id,
+                "status": "failed",
+                "error": execution.error
+            }
+        
+        # Execute tool
         try:
-            request = json.loads(raw_message)
-        except json.JSONDecodeError:
-            return self._error_response(None, -32700, "Parse error")
-
-        # Validate JSON-RPC structure
-        if not isinstance(request, dict):
-            return self._error_response(None, -32600, "Invalid Request")
-
-        request_id = request.get("id")
-        method = request.get("method")
-        params = request.get("params", {})
-        jsonrpc = request.get("jsonrpc")
-
-        # Check version
-        if jsonrpc != JSONRPC_VERSION:
-            return self._error_response(request_id, -32600, "Invalid Request: jsonrpc version")
-
-        if not method:
-            return self._error_response(request_id, -32600, "Invalid Request: missing method")
-
-        # Register request
-        if request_id:
-            await self.request_registry.register_request(request_id, method, params)
-
-        try:
-            # Route to handler
-            if method in self._handlers:
-                result = await self._handlers[method](params)
-                if request_id:
-                    return self._success_response(request_id, result)
-                return ""  # Notification, no response
+            execution.status = ToolStatus.RUNNING
+            execution.started_at = datetime.utcnow()
+            
+            if tool.async_handler:
+                # Async execution
+                task = asyncio.create_task(
+                    self._execute_tool_async(tool, tool_args, execution)
+                )
+                self._running_tasks[execution_id] = task
+                
+                # Wait for completion or timeout
+                try:
+                    await asyncio.wait_for(task, timeout=tool.timeout)
+                except asyncio.TimeoutError:
+                    task.cancel()
+                    execution.status = ToolStatus.FAILED
+                    execution.error = f"Tool execution timed out after {tool.timeout}s"
+                    execution.completed_at = datetime.utcnow()
             else:
-                return self._error_response(request_id, -32601, "Method not found")
-        except JSONRPCError as e:
-            return self._error_response(request_id, e.code, e.message, e.data)
+                # Sync execution
+                result = tool.handler(tool_args)
+                execution.result = result
+                execution.status = ToolStatus.COMPLETED
+                execution.completed_at = datetime.utcnow()
+            
+            # Calculate duration
+            if execution.started_at and execution.completed_at:
+                execution.duration = (execution.completed_at - execution.started_at).total_seconds()
+            
+            # Clean up
+            if execution_id in self._running_tasks:
+                del self._running_tasks[execution_id]
+            
+            return {
+                "execution_id": execution_id,
+                "status": execution.status.value,
+                "result": execution.result,
+                "error": execution.error,
+                "duration": execution.duration
+            }
+            
         except Exception as e:
-            return self._error_response(request_id, -32603, "Internal error", str(e))
-        finally:
-            if request_id:
-                await self.request_registry.complete_request(request_id)
+            execution.status = ToolStatus.FAILED
+            execution.error = str(e)
+            execution.completed_at = datetime.utcnow()
+            
+            # Clean up
+            if execution_id in self._running_tasks:
+                del self._running_tasks[execution_id]
+            
+            return {
+                "execution_id": execution_id,
+                "status": "failed",
+                "error": execution.error
+            }
+    
+    async def _execute_tool_async(
+        self,
+        tool: Tool,
+        arguments: Dict[str, Any],
+        execution: ToolExecution
+    ) -> None:
+        """Execute an async tool."""
+        try:
+            result = await tool.handler(arguments)
+            execution.result = result
+            execution.status = ToolStatus.COMPLETED
+            execution.completed_at = datetime.utcnow()
+        except Exception as e:
+            execution.status = ToolStatus.FAILED
+            execution.error = str(e)
+            execution.completed_at = datetime.utcnow()
+    
+    def _handle_get_execution_status(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle get_execution_status request."""
+        execution_id = arguments["execution_id"]
+        execution = self._executions.get(execution_id)
+        
+        if not execution:
+            return {
+                "error": f"Execution not found: {execution_id}"
+            }
+        
+        return {
+            "execution_id": execution.id,
+            "tool_name": execution.tool_name,
+            "status": execution.status.value,
+            "result": execution.result,
+            "error": execution.error,
+            "started_at": execution.started_at.isoformat() if execution.started_at else None,
+            "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+            "duration": execution.duration
+        }
+    
+    def _handle_cancel_execution(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle cancel_execution request."""
+        execution_id = arguments["execution_id"]
+        execution = self._executions.get(execution_id)
+        
+        if not execution:
+            return {
+                "error": f"Execution not found: {execution_id}"
+            }
+        
+        if execution.status != ToolStatus.RUNNING:
+            return {
+                "error": f"Execution is not running: {execution_id}"
+            }
+        
+        # Cancel task if running
+        if execution_id in self._running_tasks:
+            task = self._running_tasks[execution_id]
+            task.cancel()
+            del self._running_tasks[execution_id]
+        
+        # Update execution
+        execution.status = ToolStatus.CANCELLED
+        execution.completed_at = datetime.utcnow()
+        
+        return {
+            "execution_id": execution_id,
+            "status": "cancelled"
+        }
+    
+    async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle an MCP request.
+        
+        Args:
+            request: MCP request
+            
+        Returns:
+            MCP response
+        """
+        try:
+            method = request.get("method")
+            params = request.get("params", {})
+            
+            if method == "tools/list":
+                return self._handle_list_tools(params)
+            elif method == "tools/get":
+                return self._handle_get_tool_info(params)
+            elif method == "tools/call":
+                return await self._handle_execute_tool(params)
+            elif method == "execution/status":
+                return self._handle_get_execution_status(params)
+            elif method == "execution/cancel":
+                return self._handle_cancel_execution(params)
+            else:
+                return {
+                    "error": f"Unknown method: {method}"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error handling MCP request: {str(e)}")
+            return {
+                "error": str(e)
+            }
+    
+    def get_executions(self, status: ToolStatus = None) -> List[ToolExecution]:
+        """
+        Get tool executions, optionally filtered by status.
+        
+        Args:
+            status: Status filter
+            
+        Returns:
+            List of executions
+        """
+        executions = list(self._executions.values())
+        
+        if status:
+            executions = [e for e in executions if e.status == status]
+        
+        # Sort by start time (newest first)
+        executions.sort(key=lambda e: e.started_at or datetime.min, reverse=True)
+        
+        return executions
+    
+    def cleanup_executions(self, max_age_hours: float = 24.0) -> int:
+        """
+        Clean up old executions.
+        
+        Args:
+            max_age_hours: Maximum age in hours
+            
+        Returns:
+            Number of executions cleaned up
+        """
+        cutoff_time = datetime.utcnow() - timedelta(hours=max_age_hours)
+        
+        to_remove = [
+            execution_id for execution_id, execution in self._executions.items()
+            if execution.started_at and execution.started_at < cutoff_time
+        ]
+        
+        for execution_id in to_remove:
+            del self._executions[execution_id]
+            if execution_id in self._running_tasks:
+                self._running_tasks[execution_id].cancel()
+                del self._running_tasks[execution_id]
+        
+        logger.info(f"Cleaned up {len(to_remove)} old executions")
+        return len(to_remove)
 
-    def _success_response(self, request_id: str, result: Any) -> str:
-        """Create a JSON-RPC success response."""
-        response = {"jsonrpc": JSONRPC_VERSION, "result": result, "id": request_id}
-        return json.dumps(response)
 
-    def _error_response(
-        self, request_id: Optional[str], code: int, message: str, data: Optional[str] = None
-    ) -> str:
-        """Create a JSON-RPC error response."""
-        error = {"code": code, "message": message}
-        if data:
-            error["data"] = data
-        response = {"jsonrpc": JSONRPC_VERSION, "error": error, "id": request_id}
-        return json.dumps(response)
-
-    async def start_garbage_collection(self) -> None:
-        """Start background garbage collection task."""
-        while True:
-            await asyncio.sleep(GARBAGE_COLLECTION_INTERVAL)
-            expired = await self.request_registry.garbage_collect()
-            if expired:
-                # TODO: Log expired requests and trigger performance penalties
-                pass
-
-
-# Global MCP Server instance
-_mcp_server_instance: Optional[MCPServer] = None
-
-
-def get_mcp_server() -> MCPServer:
-    """Get or create the global MCP Server instance."""
-    global _mcp_server_instance
-    if _mcp_server_instance is None:
-        _mcp_server_instance = MCPServer()
-    return _mcp_server_instance
+# Global MCP server instance
+mcp_server = MCPServer()

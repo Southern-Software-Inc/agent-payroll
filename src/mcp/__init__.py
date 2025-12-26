@@ -12,14 +12,10 @@ Git Hash: INITIAL
 
 from src.mcp.server import (
     MCPServer,
-    get_mcp_server,
-    JSONRPCError,
-    ActiveRequestRegistry,
+    mcp_server,
 )
 
 __all__ = [
     "MCPServer",
-    "get_mcp_server",
-    "JSONRPCError",
-    "ActiveRequestRegistry",
+    "mcp_server",
 ]

@@ -277,11 +277,16 @@ def get_context_manager() -> ContextManager:
     return _context_manager
 
 
+# Import archival storage
+from .backends.archival import ArchivalStorage, ArchivalConfig
+
 __all__ = [
     "MemoryChunk",
     "SemanticSieve",
     "VectorStore",
     "ContextManager",
+    "ArchivalStorage",
+    "ArchivalConfig",
     "get_vector_store",
     "get_semantic_sieve",
     "get_context_manager",

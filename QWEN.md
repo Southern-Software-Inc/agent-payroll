@@ -28,4 +28,8 @@
 
 * The repository for this program is located at 'https://github.com/southernpitbull/agent-payroll.git' and is to be updated on the hour and on the half hour while coding.
 
+* the compensation paid out to all agents collectively for a completed job must never be more than 75% of the total payment for the job. All left over funds go into the system bank account.
+
+* 
+
 
